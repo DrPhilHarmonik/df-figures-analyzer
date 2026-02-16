@@ -31,7 +31,7 @@ DF_MONTHS = [
 def clean_xml(filepath):
     """Read XML file and strip invalid control characters."""
     print("Cleaning XML of invalid characters...")
-    with open(filepath, 'r', encoding='utf-8') as f:
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         content = f.read()
     return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', content)
 
