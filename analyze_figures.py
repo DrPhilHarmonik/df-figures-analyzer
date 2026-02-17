@@ -6,11 +6,28 @@ Usage:
     python3 analyze_figures.py <file> <id>      # Timeline for specific figure by ID
 """
 
+import dataclasses
 import xml.etree.ElementTree as ET
 from collections import defaultdict, Counter
 import re
 import sys
 import os
+
+
+@dataclasses.dataclass
+class WorldData:
+    sites: dict
+    entities: dict
+    artifacts: dict
+    artifact_by_holder: dict
+    hf_info: dict
+    event_counts: Counter
+    kill_counts: Counter
+    killed_by: dict
+    event_type_counts: dict
+    all_events: dict
+    hfid_to_events: dict
+    collections: list
 
 # Fields in events that reference historical figure IDs
 HF_FIELDS = {
@@ -95,9 +112,9 @@ def extract_historical_figures(root):
         hf_info[hfid] = {
             "name": hf.findtext("name", "unnamed"), "race": race,
             "caste": hf.findtext("caste", ""),
-            "by": hf.findtext("birth_year", "?"), "dy": hf.findtext("death_year", "-1"),
-            "assoc": assoc, "ai": ai_list, "el": el_list, "hl": hl_list, "sk": sk_list,
-            "sp": sp_list, "sl": sl_list,
+            "birth_year": hf.findtext("birth_year", "?"), "death_year": hf.findtext("death_year", "-1"),
+            "associated_type": assoc, "active_interactions": ai_list, "entity_links": el_list,
+            "hf_links": hl_list, "skills": sk_list, "spheres": sp_list, "site_links": sl_list,
             "vamp": any("VAMPIRE" in a.upper() for a in ai_list),
             "necro": any("NECROMANCER" in a.upper() or "RAISE" in a.upper() for a in ai_list),
             "deity": assoc == "DEITY", "force": assoc == "FORCE",
@@ -176,30 +193,30 @@ def extract_collections(root):
     return collections
 
 
-def score_figures(hf_info, event_counts, kill_counts, killed_by, artifact_by_holder):
+def score_figures(world):
     """Score each historical figure by 'interestingness'."""
     print("\nScoring figures...")
     scores = {}
-    for hfid, hf in hf_info.items():
-        s = min(event_counts.get(hfid, 0) * 2, 500)
-        s += kill_counts.get(hfid, 0) * 15
+    for hfid, hf in world.hf_info.items():
+        s = min(world.event_counts.get(hfid, 0) * 2, 500)
+        s += world.kill_counts.get(hfid, 0) * 15
         if hf["vamp"]: s += 80
         if hf["necro"]: s += 100
         if hf["deity"]: s += 120
         if hf["force"]: s += 90
         if hf["mega"]: s += 70
-        s += min(len(hf["hl"]) * 3, 100)
-        s += sum(20 for el in hf["el"]
+        s += min(len(hf["hf_links"]) * 3, 100)
+        s += sum(20 for el in hf["entity_links"]
                  if el["type"] in ("position", "former_position", "position_claim"))
-        s += len(artifact_by_holder.get(hfid, [])) * 30
-        s += len(hf["sp"]) * 10
-        if hf["sk"]:
-            s += min(len(hf["sk"]) * 2 + max(x["ip"] for x in hf["sk"]) // 5000, 80)
-        s += min(len(hf["sl"]) * 5, 50)
-        s += min(len(hf["el"]) * 3, 60)
-        if hf["dy"] != "-1":
+        s += len(world.artifact_by_holder.get(hfid, [])) * 30
+        s += len(hf["spheres"]) * 10
+        if hf["skills"]:
+            s += min(len(hf["skills"]) * 2 + max(x["ip"] for x in hf["skills"]) // 5000, 80)
+        s += min(len(hf["site_links"]) * 5, 50)
+        s += min(len(hf["entity_links"]) * 3, 60)
+        if hf["death_year"] != "-1":
             s += 5
-        if hfid in killed_by:
+        if hfid in world.killed_by:
             s += 5
         scores[hfid] = s
     return scores
@@ -239,14 +256,13 @@ def format_time(year, sec):
     return ts
 
 
-def print_top20(top20, hf_info, event_counts, kill_counts, event_type_counts,
-                artifact_by_holder):
+def print_top20(top20, world):
     print("\n" + "=" * 80)
     print("TOP 20 MOST INTERESTING HISTORICAL FIGURES")
     print("=" * 80)
     for rank, (hfid, score) in enumerate(top20, 1):
-        hf = hf_info[hfid]
-        alive = "ALIVE" if hf["dy"] == "-1" else "died yr " + hf["dy"]
+        hf = world.hf_info[hfid]
+        alive = "ALIVE" if hf["death_year"] == "-1" else "died yr " + hf["death_year"]
         tags = []
         if hf["deity"]: tags.append("DEITY")
         if hf["force"]: tags.append("FORCE")
@@ -254,56 +270,55 @@ def print_top20(top20, hf_info, event_counts, kill_counts, event_type_counts,
         if hf["necro"]: tags.append("NECROMANCER")
         if hf["mega"]: tags.append("MEGABEAST")
         tag_str = " [" + ",".join(tags) + "]" if tags else ""
-        kills = kill_counts.get(hfid, 0)
-        evts = event_counts.get(hfid, 0)
-        rels = len(hf["hl"])
-        posns = sum(1 for el in hf["el"] if el["type"] in ("position", "former_position"))
+        kills = world.kill_counts.get(hfid, 0)
+        evts = world.event_counts.get(hfid, 0)
+        rels = len(hf["hf_links"])
+        posns = sum(1 for el in hf["entity_links"] if el["type"] in ("position", "former_position"))
         print(f"\n  #{rank}: {hf['name'].title()} (ID:{hfid}) SCORE:{score}")
-        print(f"    {hf['race']} {hf['caste']}, born yr {hf['by']}, {alive}{tag_str}")
+        print(f"    {hf['race']} {hf['caste']}, born yr {hf['birth_year']}, {alive}{tag_str}")
         print(f"    Events:{evts} Kills:{kills} Relations:{rels} Positions:{posns}")
-        if hf["sp"]:
-            print("    Spheres: " + ", ".join(hf["sp"]))
-        if artifact_by_holder.get(hfid):
-            print("    Artifacts: " + ", ".join(artifact_by_holder[hfid]))
-        if hf["sk"]:
-            tsk = sorted(hf["sk"], key=lambda x: x["ip"], reverse=True)[:3]
+        if hf["spheres"]:
+            print("    Spheres: " + ", ".join(hf["spheres"]))
+        if world.artifact_by_holder.get(hfid):
+            print("    Artifacts: " + ", ".join(world.artifact_by_holder[hfid]))
+        if hf["skills"]:
+            tsk = sorted(hf["skills"], key=lambda x: x["ip"], reverse=True)[:3]
             print("    Top skills: " + ", ".join(
                 x["skill"] + "(" + str(x["ip"]) + ")" for x in tsk))
-        if hfid in event_type_counts:
-            tev = event_type_counts[hfid].most_common(5)
+        if hfid in world.event_type_counts:
+            tev = world.event_type_counts[hfid].most_common(5)
             print("    Top events: " + ", ".join(
                 t + "(" + str(c) + ")" for t, c in tev))
 
 
-def print_timeline(winner_id, hf_info, hfid_to_events, all_events, sites, entities,
-                   artifacts, killed_by, collections):
-    w = hf_info[winner_id]
+def print_timeline(winner_id, world):
+    w = world.hf_info[winner_id]
     print("\n\n" + "=" * 80)
     print("FULL TIMELINE: " + w["name"].title() + " (ID:" + winner_id + ")")
-    print("  " + w["race"] + " " + w["caste"] + ", born year " + w["by"])
-    if w["dy"] != "-1":
-        print("  Died year " + w["dy"])
-        if winner_id in killed_by:
-            print("  Killed by: " + (resolve_hf(killed_by[winner_id], hf_info) or "unknown"))
+    print("  " + w["race"] + " " + w["caste"] + ", born year " + w["birth_year"])
+    if w["death_year"] != "-1":
+        print("  Died year " + w["death_year"])
+        if winner_id in world.killed_by:
+            print("  Killed by: " + (resolve_hf(world.killed_by[winner_id], world.hf_info) or "unknown"))
     else:
         print("  Status: ALIVE")
-    if w["sp"]:
-        print("  Spheres: " + ", ".join(w["sp"]))
-    if w["hl"]:
+    if w["spheres"]:
+        print("  Spheres: " + ", ".join(w["spheres"]))
+    if w["hf_links"]:
         print("  Relationships:")
-        for hl in w["hl"][:20]:
-            print("    - " + hl["type"] + ": " + (resolve_hf(hl["hfid"], hf_info) or "?"))
-    if w["el"]:
+        for hl in w["hf_links"][:20]:
+            print("    - " + hl["type"] + ": " + (resolve_hf(hl["hfid"], world.hf_info) or "?"))
+    if w["entity_links"]:
         print("  Entity affiliations:")
-        for el in w["el"]:
-            print("    - " + el["type"] + ": " + (resolve_entity(el["eid"], entities) or "?"))
+        for el in w["entity_links"]:
+            print("    - " + el["type"] + ": " + (resolve_entity(el["eid"], world.entities) or "?"))
     print("=" * 80)
 
     # Sort events chronologically
-    event_ids = hfid_to_events.get(winner_id, [])
+    event_ids = world.hfid_to_events.get(winner_id, [])
     events_sorted = []
     for eid in event_ids:
-        ev = all_events.get(eid, {})
+        ev = world.all_events.get(eid, {})
         try:
             yr = int(ev.get("year", 0))
         except ValueError:
@@ -324,19 +339,19 @@ def print_timeline(winner_id, hf_info, hfid_to_events, all_events, sites, entiti
                 continue
             display = v
             if k == "site_id":
-                r = resolve_site(v, sites)
+                r = resolve_site(v, world.sites)
                 if r:
                     display = r
             elif "entity" in k or "civ" in k:
-                r = resolve_entity(v, entities)
+                r = resolve_entity(v, world.entities)
                 if r:
                     display = r.title()
             elif "hfid" in k.lower():
-                r = resolve_hf(v, hf_info)
+                r = resolve_hf(v, world.hf_info)
                 if r:
                     display = r
             elif k == "artifact_id":
-                a = artifacts.get(v, "")
+                a = world.artifacts.get(v, "")
                 if a:
                     display = a
             details.append(k.replace("_", " ").title() + ": " + display)
@@ -345,8 +360,8 @@ def print_timeline(winner_id, hf_info, hfid_to_events, all_events, sites, entiti
             print("      " + d)
 
     # Relevant event collections
-    top_event_set = set(hfid_to_events.get(winner_id, []))
-    rel_colls = [c for c in collections if top_event_set.intersection(set(c.get("_events", [])))]
+    top_event_set = set(world.hfid_to_events.get(winner_id, []))
+    rel_colls = [c for c in world.collections if top_event_set.intersection(set(c.get("_events", [])))]
     if rel_colls:
         print("\n\n  EVENT COLLECTIONS involving " + w["name"].title() + ":")
         for c in rel_colls[:30]:
@@ -361,7 +376,7 @@ def print_timeline(winner_id, hf_info, hfid_to_events, all_events, sites, entiti
             for ekey in ("aggressor_ent_id", "defender_ent_id", "attacking_enid", "defending_enid"):
                 ei = c.get(ekey, "")
                 if ei and ei != "-1":
-                    en = resolve_entity(ei, entities) or ei
+                    en = resolve_entity(ei, world.entities) or ei
                     nice = ekey.replace("_ent_id", "").replace("_enid", "").replace("_", " ").strip().title()
                     label += " [" + nice + ": " + en.title() + "]"
             print("    - " + label)
@@ -383,28 +398,37 @@ def main():
     root = parse_all(content)
     del content
 
-    sites = extract_sites(root)
     artifacts, artifact_by_holder = extract_artifacts(root)
-    entities = extract_entities(root)
-    hf_info = extract_historical_figures(root)
     event_counts, kill_counts, killed_by, event_type_counts, all_events, hfid_to_events = \
         extract_events(root, HF_FIELDS)
-    collections = extract_collections(root)
+    world = WorldData(
+        sites=extract_sites(root),
+        entities=extract_entities(root),
+        artifacts=artifacts,
+        artifact_by_holder=artifact_by_holder,
+        hf_info=extract_historical_figures(root),
+        event_counts=event_counts,
+        kill_counts=kill_counts,
+        killed_by=killed_by,
+        event_type_counts=event_type_counts,
+        all_events=all_events,
+        hfid_to_events=hfid_to_events,
+        collections=extract_collections(root),
+    )
     root.clear()
 
-    scores = score_figures(hf_info, event_counts, kill_counts, killed_by, artifact_by_holder)
+    scores = score_figures(world)
     top20 = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:20]
 
-    print_top20(top20, hf_info, event_counts, kill_counts, event_type_counts, artifact_by_holder)
+    print_top20(top20, world)
 
     # Use target_id if specified, otherwise use the #1 figure
     winner_id = target_id if target_id else top20[0][0]
-    if winner_id not in hf_info:
+    if winner_id not in world.hf_info:
         print(f"\nERROR: Figure ID '{winner_id}' not found!")
         return
 
-    print_timeline(winner_id, hf_info, hfid_to_events, all_events, sites, entities,
-                   artifacts, killed_by, collections)
+    print_timeline(winner_id, world)
 
     print("\n\nANALYSIS COMPLETE")
 
