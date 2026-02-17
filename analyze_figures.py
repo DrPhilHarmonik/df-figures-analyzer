@@ -2,11 +2,15 @@
 """Analyze a Dwarf Fortress legends XML file to find the most interesting historical figures.
 
 Usage:
-    python3 analyze_figures.py <file>           # Top 20 figures + timeline for #1
-    python3 analyze_figures.py <file> <id>      # Timeline for specific figure by ID
+    python3 analyze_figures.py <file>                   # Top 20 figures + timeline for #1
+    python3 analyze_figures.py <file> -n 10              # Top 10 figures
+    python3 analyze_figures.py <file> -f 1234            # Timeline for specific figure
+    python3 analyze_figures.py <file> --format json      # JSON output to stdout
 """
 
+import argparse
 import dataclasses
+import json
 import xml.etree.ElementTree as ET
 from collections import defaultdict, Counter
 import re
@@ -47,7 +51,7 @@ DF_MONTHS = [
 
 def clean_xml(filepath):
     """Read XML file and strip invalid control characters."""
-    print("Cleaning XML of invalid characters...")
+    print("Cleaning XML of invalid characters...", file=sys.stderr)
     with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         content = f.read()
     return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', content)
@@ -55,9 +59,9 @@ def clean_xml(filepath):
 
 def parse_all(xml_string):
     """Parse the full XML tree and extract all relevant data."""
-    print("Parsing full XML tree...")
+    print("Parsing full XML tree...", file=sys.stderr)
     root = ET.fromstring(xml_string)
-    print("XML parsed!")
+    print("XML parsed!", file=sys.stderr)
     return root
 
 
@@ -65,7 +69,7 @@ def extract_sites(root):
     sites = {}
     for site in root.findall(".//sites/site"):
         sites[site.findtext("id", "")] = site.findtext("name", "unknown")
-    print(f"  {len(sites)} sites")
+    print(f"  {len(sites)} sites", file=sys.stderr)
     return sites
 
 
@@ -80,7 +84,7 @@ def extract_artifacts(root):
         artifacts[aid] = item_name
         if holder and holder != "-1":
             artifact_by_holder[holder].append(item_name or "artifact#" + aid)
-    print(f"  {len(artifacts)} artifacts")
+    print(f"  {len(artifacts)} artifacts", file=sys.stderr)
     return artifacts, artifact_by_holder
 
 
@@ -88,12 +92,12 @@ def extract_entities(root):
     entities = {}
     for ent in root.findall(".//entities/entity"):
         entities[ent.findtext("id", "")] = ent.findtext("name", "unnamed")
-    print(f"  {len(entities)} entities")
+    print(f"  {len(entities)} entities", file=sys.stderr)
     return entities
 
 
 def extract_historical_figures(root):
-    print("Parsing historical figures...")
+    print("Parsing historical figures...", file=sys.stderr)
     hf_info = {}
     for hf in root.findall(".//historical_figures/historical_figure"):
         hfid = hf.findtext("id", "")
@@ -122,12 +126,12 @@ def extract_historical_figures(root):
                 "DRAGON", "HYDRA", "COLOSSUS_BRONZE", "CYCLOPS", "ETTIN", "GIANT", "ROC", "TITAN"
             },
         }
-    print(f"  {len(hf_info)} figures")
+    print(f"  {len(hf_info)} figures", file=sys.stderr)
     return hf_info
 
 
 def extract_events(root, hf_fields):
-    print("Parsing events...")
+    print("Parsing events...", file=sys.stderr)
     event_counts = Counter()
     kill_counts = Counter()
     killed_by = {}
@@ -172,12 +176,12 @@ def extract_events(root, hf_fields):
         if victim and slayer and slayer != "-1":
             killed_by[victim] = slayer
 
-    print(f"  {len(all_events)} events")
+    print(f"  {len(all_events)} events", file=sys.stderr)
     return event_counts, kill_counts, killed_by, event_type_counts, all_events, hfid_to_events
 
 
 def extract_collections(root):
-    print("Parsing event collections...")
+    print("Parsing event collections...", file=sys.stderr)
     collections = []
     for coll in root.findall(".//historical_event_collections/historical_event_collection"):
         c = {}
@@ -189,13 +193,13 @@ def extract_collections(root):
                 c[child.tag] = child.text or ""
         c["_events"] = coll_events
         collections.append(c)
-    print(f"  {len(collections)} collections")
+    print(f"  {len(collections)} collections", file=sys.stderr)
     return collections
 
 
 def score_figures(world):
     """Score each historical figure by 'interestingness'."""
-    print("\nScoring figures...")
+    print("\nScoring figures...", file=sys.stderr)
     scores = {}
     for hfid, hf in world.hf_info.items():
         s = min(world.event_counts.get(hfid, 0) * 2, 500)
@@ -256,11 +260,12 @@ def format_time(year, sec):
     return ts
 
 
-def print_top20(top20, world):
+def print_top(top, world):
+    n = len(top)
     print("\n" + "=" * 80)
-    print("TOP 20 MOST INTERESTING HISTORICAL FIGURES")
+    print(f"TOP {n} MOST INTERESTING HISTORICAL FIGURES")
     print("=" * 80)
-    for rank, (hfid, score) in enumerate(top20, 1):
+    for rank, (hfid, score) in enumerate(top, 1):
         hf = world.hf_info[hfid]
         alive = "ALIVE" if hf["death_year"] == "-1" else "died yr " + hf["death_year"]
         tags = []
@@ -382,19 +387,120 @@ def print_timeline(winner_id, world):
             print("    - " + label)
 
 
+def build_results(top, winner_id, world, scores):
+    """Build a dict of results suitable for JSON serialization."""
+    top_figures = []
+    for rank, (hfid, score) in enumerate(top, 1):
+        hf = world.hf_info[hfid]
+        tags = []
+        if hf["deity"]: tags.append("DEITY")
+        if hf["force"]: tags.append("FORCE")
+        if hf["vamp"]: tags.append("VAMPIRE")
+        if hf["necro"]: tags.append("NECROMANCER")
+        if hf["mega"]: tags.append("MEGABEAST")
+        top_figures.append({
+            "rank": rank,
+            "id": hfid,
+            "name": hf["name"].title(),
+            "race": hf["race"],
+            "caste": hf["caste"],
+            "birth_year": hf["birth_year"],
+            "death_year": hf["death_year"],
+            "score": score,
+            "kills": world.kill_counts.get(hfid, 0),
+            "events": world.event_counts.get(hfid, 0),
+            "relations": len(hf["hf_links"]),
+            "positions": sum(1 for el in hf["entity_links"]
+                             if el["type"] in ("position", "former_position")),
+            "tags": tags,
+            "spheres": hf["spheres"],
+            "artifacts": world.artifact_by_holder.get(hfid, []),
+            "top_skills": [{"skill": s["skill"], "ip": s["ip"]}
+                           for s in sorted(hf["skills"], key=lambda x: x["ip"], reverse=True)[:3]],
+        })
+
+    # Timeline for selected figure
+    timeline = None
+    if winner_id and winner_id in world.hf_info:
+        w = world.hf_info[winner_id]
+        event_ids = world.hfid_to_events.get(winner_id, [])
+        events_sorted = []
+        for eid in event_ids:
+            ev = world.all_events.get(eid, {})
+            try:
+                yr = int(ev.get("year", 0))
+            except ValueError:
+                yr = 0
+            try:
+                sc = int(ev.get("sec", -1))
+            except ValueError:
+                sc = -1
+            events_sorted.append((yr, sc, eid, ev))
+        events_sorted.sort()
+
+        event_list = []
+        for yr, sc, eid, ev in events_sorted:
+            event_list.append({
+                "id": eid,
+                "type": ev.get("type", ""),
+                "year": yr,
+                "timestamp": format_time(yr, sc),
+                "details": {k: v for k, v in ev.items()
+                            if k not in ("id", "type", "year", "sec") and v not in ("-1", "", "-1,-1")},
+            })
+
+        top_event_set = set(world.hfid_to_events.get(winner_id, []))
+        rel_colls = [c for c in world.collections
+                     if top_event_set.intersection(set(c.get("_events", [])))]
+        collections_list = []
+        for c in rel_colls[:30]:
+            collections_list.append({
+                "type": c.get("type", ""),
+                "name": c.get("name", ""),
+                "start_year": c.get("start_year", ""),
+                "end_year": c.get("end_year", ""),
+            })
+
+        timeline = {
+            "id": winner_id,
+            "name": w["name"].title(),
+            "race": w["race"],
+            "caste": w["caste"],
+            "birth_year": w["birth_year"],
+            "death_year": w["death_year"],
+            "killed_by": resolve_hf(world.killed_by.get(winner_id, ""), world.hf_info),
+            "spheres": w["spheres"],
+            "relationships": [{"type": hl["type"],
+                               "figure": resolve_hf(hl["hfid"], world.hf_info)}
+                              for hl in w["hf_links"][:20]],
+            "entity_links": [{"type": el["type"],
+                              "entity": resolve_entity(el["eid"], world.entities)}
+                             for el in w["entity_links"]],
+            "events": event_list,
+            "collections": collections_list,
+        }
+
+    return {"top_figures": top_figures, "timeline": timeline}
+
+
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 analyze_figures.py <legends_xml_file> [figure_id]")
+    parser = argparse.ArgumentParser(
+        description="Analyze a Dwarf Fortress legends XML file to find the most interesting historical figures."
+    )
+    parser.add_argument("file", help="Path to the legends XML file")
+    parser.add_argument("-f", "--figure", default=None,
+                        help="Historical figure ID to show timeline for (default: top-ranked figure)")
+    parser.add_argument("-n", "--top", type=int, default=20,
+                        help="Number of top figures to display (default: 20)")
+    parser.add_argument("--format", choices=["text", "json"], default="text",
+                        dest="output_format", help="Output format (default: text)")
+    args = parser.parse_args()
+
+    if not os.path.isfile(args.file):
+        print(f"ERROR: File not found: {args.file}", file=sys.stderr)
         sys.exit(1)
 
-    xml_file = sys.argv[1]
-    if not os.path.isfile(xml_file):
-        print(f"ERROR: File not found: {xml_file}")
-        sys.exit(1)
-
-    target_id = sys.argv[2] if len(sys.argv) > 2 else None
-
-    content = clean_xml(xml_file)
+    content = clean_xml(args.file)
     root = parse_all(content)
     del content
 
@@ -418,19 +524,21 @@ def main():
     root.clear()
 
     scores = score_figures(world)
-    top20 = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:20]
+    top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:args.top]
 
-    print_top20(top20, world)
-
-    # Use target_id if specified, otherwise use the #1 figure
-    winner_id = target_id if target_id else top20[0][0]
+    # Determine which figure to show timeline for
+    winner_id = args.figure if args.figure else top[0][0]
     if winner_id not in world.hf_info:
-        print(f"\nERROR: Figure ID '{winner_id}' not found!")
-        return
+        print(f"\nERROR: Figure ID '{winner_id}' not found!", file=sys.stderr)
+        sys.exit(1)
 
-    print_timeline(winner_id, world)
-
-    print("\n\nANALYSIS COMPLETE")
+    if args.output_format == "json":
+        result = build_results(top, winner_id, world, scores)
+        print(json.dumps(result, indent=2))
+    else:
+        print_top(top, world)
+        print_timeline(winner_id, world)
+        print("\n\nANALYSIS COMPLETE")
 
 
 if __name__ == "__main__":
