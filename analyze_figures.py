@@ -237,6 +237,28 @@ def print_top(top, world):
                 t + "(" + str(c) + ")" for t, c in tev))
 
 
+def find_rivals(hfid, world):
+    """Return top 15 co-appearing figures for hfid, with relationship type if known."""
+    co = Counter()
+    for eid in world.hfid_to_events.get(hfid, []):
+        ev = world.all_events.get(eid, {})
+        for field in HF_FIELDS:
+            v = ev.get(field, "")
+            if v and v != "-1" and v != hfid:
+                co[v] += 1
+    # Build relationship lookup from hf_links
+    rel_map = {hl["hfid"]: hl["type"] for hl in world.hf_info[hfid].get("hf_links", [])}
+    rivals = []
+    for other_id, count in co.most_common(15):
+        rivals.append({
+            "hfid": other_id,
+            "name": resolve_hf(other_id, world.hf_info) or "fig#" + other_id,
+            "co_appearances": count,
+            "relationship": rel_map.get(other_id),
+        })
+    return rivals
+
+
 def print_timeline(winner_id, world):
     w = world.hf_info[winner_id]
     print("\n\n" + "=" * 80)
@@ -259,6 +281,13 @@ def print_timeline(winner_id, world):
         for el in w["entity_links"]:
             print("    - " + el["type"] + ": " + (resolve_entity(el["eid"], world.entities) or "?"))
     print("=" * 80)
+
+    rivals = find_rivals(winner_id, world)
+    if rivals:
+        print("\n  MOST FREQUENTLY ENCOUNTERED FIGURES:")
+        for r in rivals:
+            rel_str = " [" + r["relationship"] + "]" if r["relationship"] else ""
+            print("    - " + r["name"] + " — " + str(r["co_appearances"]) + " shared events" + rel_str)
 
     event_ids = world.hfid_to_events.get(winner_id, [])
     events_sorted = sort_events(event_ids, world.all_events)
@@ -371,6 +400,7 @@ def build_results(top, winner_id, world, scores):
                              for el in w["entity_links"]],
             "events": event_list,
             "collections": collections_list,
+            "rivals": find_rivals(winner_id, world),
         }
 
     return {"top_figures": top_figures, "timeline": timeline}
@@ -387,6 +417,8 @@ def main():
                         help="Number of top figures to display (default: 20)")
     parser.add_argument("--format", choices=["text", "json"], default="text",
                         dest="output_format", help="Output format (default: text)")
+    parser.add_argument("--race", default=None,
+                        help="Filter figures by race (e.g. dwarf, elf, goblin)")
     args = parser.parse_args()
 
     if not os.path.isfile(args.file):
@@ -417,7 +449,11 @@ def main():
     root.clear()
 
     scores = score_figures(world)
-    top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:args.top]
+    top = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    if args.race:
+        top = [(hfid, s) for hfid, s in top
+               if world.hf_info[hfid]["race"].lower() == args.race.lower()]
+    top = top[:args.top]
 
     if not top:
         print("ERROR: No historical figures found in this legends file.", file=sys.stderr)

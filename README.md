@@ -25,6 +25,7 @@ python3 analyze_figures.py <file> [options]
 | `file` | Path to the legends XML file |
 | `-f`, `--figure ID` | Historical figure ID to show a timeline for (default: top-ranked figure) |
 | `-n`, `--top N` | Number of top figures to display (default: `20`) |
+| `--race RACE` | Filter results to figures of a specific race (e.g. `dwarf`, `elf`, `goblin`) |
 | `--format text\|json` | Output format (default: `text`) |
 
 Progress messages (loading, parsing, extraction counts) are written to
@@ -46,6 +47,9 @@ python3 analyze_figures.py legends.xml
 
 # Top 10 figures only
 python3 analyze_figures.py legends.xml -n 10
+
+# Top 5 dwarves by score
+python3 analyze_figures.py legends.xml --race dwarf -n 5
 
 # Full timeline for figure ID 1234
 python3 analyze_figures.py legends.xml -f 1234
@@ -70,6 +74,7 @@ python3 analyze_figures.py legends.xml --format json 2>/dev/null | python3 -m js
 
 - Header: identity, life/death status, killer if known
 - Spheres, relationships (up to 20), entity affiliations
+- **Most frequently encountered figures** — top 15 co-appearing figures ranked by shared events, with relationship type if recorded (e.g. `spouse`, `parent`, `enemy`)
 - Full chronological event list with resolved names:
   - `site_id` → site name
   - entity/civ fields → entity name
@@ -121,7 +126,15 @@ python3 analyze_figures.py legends.xml --format json 2>/dev/null | python3 -m js
         "details": {}
       }
     ],
-    "collections": [{"type": "...", "name": "...", "start_year": "...", "end_year": "..."}]
+    "collections": [{"type": "...", "name": "...", "start_year": "...", "end_year": "..."}],
+    "rivals": [
+      {
+        "hfid": "...",
+        "name": "...",
+        "co_appearances": 0,
+        "relationship": "spouse"
+      }
+    ]
   }
 }
 ```
@@ -157,6 +170,14 @@ Each historical figure receives a score used only for ranking:
 Events carry `year` and `seconds72`. When `seconds72 >= 0` the script
 converts it to a DF calendar date (12 months × 28 days, named *Granite*
 through *Obsidian*). If conversion fails it falls back to `Year <year>`.
+
+## Race filter
+
+`--race RACE` applies a case-insensitive exact match against each figure's `race` field after scoring, so the ranking order within the filtered set is still determined by the full scoring model. The top-N cap is applied after filtering.
+
+## Rivalry detection
+
+For the selected figure's timeline, the script counts every other historical figure that appears in any of the same events (via all fields in `HF_FIELDS`). The top 15 by co-appearance count are reported as *rivals*. For each, the relationship type is resolved from the figure's `hf_link` entries (e.g. `spouse`, `parent`, `child`, `lover`, `enemy`) when available; otherwise it is `null`.
 
 ## Limitations
 
