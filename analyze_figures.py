@@ -11,14 +11,16 @@ Usage:
 import argparse
 import dataclasses
 import json
-try:
-    import defusedxml.ElementTree as ET
-except ImportError:
-    import xml.etree.ElementTree as ET  # type: ignore[no-redef]
-from collections import defaultdict, Counter
-import re
-import sys
 import os
+import sys
+
+from df_legends_common import (
+    ET, HF_FIELDS, clean_xml, parse_xml, format_time,
+    resolve_hf, resolve_site, resolve_entity,
+    format_event_details, sort_events,
+)
+
+from collections import defaultdict, Counter
 
 
 @dataclasses.dataclass
@@ -36,46 +38,12 @@ class WorldData:
     hfid_to_events: dict
     collections: list
 
-# Fields in events that reference historical figure IDs
-HF_FIELDS = {
-    'hfid', 'slayer_hfid', 'hfid1', 'hfid2', 'group_hfid', 'snatcher_hfid',
-    'changee_hfid', 'changer_hfid', 'woundee_hfid', 'wounder_hfid',
-    'doer_hfid', 'target_hfid', 'attacker_hfid', 'defender_hfid',
-    'hist_fig_id', 'body_hfid', 'hfid_target', 'hfid_attacker',
-    'hfid_defender', 'trickster_hfid', 'cover_hfid', 'student_hfid',
-    'teacher_hfid', 'trainer_hfid', 'seeker_hfid',
-}
-
-_CONTROL_CHAR_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
-_SKIP_KEYS = frozenset(("id", "type", "year", "sec"))
-_SKIP_VALS = frozenset(("-1", "", "-1,-1"))
-
-DF_MONTHS = [
-    "Granite", "Slate", "Felsite", "Hematite", "Malachite", "Galena",
-    "Limestone", "Sandstone", "Timber", "Moonstone", "Opal", "Obsidian"
-]
-
-
-def clean_xml(filepath):
-    """Read XML file and strip invalid control characters."""
-    print("Cleaning XML of invalid characters...", file=sys.stderr)
-    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-        content = f.read()
-    return _CONTROL_CHAR_RE.sub('', content)
-
-
-def parse_all(xml_string):
-    """Parse the full XML tree and extract all relevant data."""
-    print("Parsing full XML tree...", file=sys.stderr)
-    root = ET.fromstring(xml_string)
-    print("XML parsed!", file=sys.stderr)
-    return root
-
 
 def extract_sites(root):
     sites = {}
     for site in root.findall(".//sites/site"):
-        sites[site.findtext("id", "")] = site.findtext("name", "unknown")
+        sid = site.findtext("id", "")
+        sites[sid] = {"name": site.findtext("name", "unknown")}
     print(f"  {len(sites)} sites", file=sys.stderr)
     return sites
 
@@ -137,7 +105,7 @@ def extract_historical_figures(root):
     return hf_info
 
 
-def extract_events(root, hf_fields):
+def extract_events(root):
     print("Parsing events...", file=sys.stderr)
     event_counts = Counter()
     kill_counts = Counter()
@@ -160,7 +128,7 @@ def extract_events(root, hf_fields):
         for child in evt:
             if child.tag not in ("id", "type", "year", "seconds72"):
                 ev_data[child.tag] = child.text or ""
-            if child.text and child.tag in hf_fields:
+            if child.text and child.tag in HF_FIELDS:
                 try:
                     v = int(child.text)
                     if v >= 0:
@@ -233,81 +201,6 @@ def score_figures(world):
     return scores
 
 
-def resolve_hf(hfid, hf_info):
-    if hfid == "-1" or not hfid:
-        return None
-    info = hf_info.get(hfid, {})
-    name = info.get("name", "fig#" + hfid)
-    race = info.get("race", "")
-    return name.title() + " (" + race + ")" if race else name.title()
-
-
-def resolve_site(sid, sites):
-    if sid == "-1" or not sid:
-        return None
-    return sites.get(sid, "site#" + sid)
-
-
-def resolve_entity(eid, entities):
-    if eid == "-1" or not eid:
-        return None
-    return entities.get(eid, "entity#" + eid)
-
-
-def format_time(year, sec):
-    ts = "Year " + str(year)
-    if sec >= 0:
-        try:
-            doy = sec // 1200 + 1
-            mo = min((doy - 1) // 28 + 1, 12)
-            day = (doy - 1) % 28 + 1
-            ts = f"Year {year}, {day} {DF_MONTHS[mo - 1]}"
-        except (ValueError, IndexError):
-            pass
-    return ts
-
-
-def format_event_details(ev, sites, entities, hf_info, artifacts):
-    """Return human-readable 'Key: Value' strings for displayable event fields."""
-    details = []
-    for k, v in sorted(ev.items()):
-        if k in _SKIP_KEYS or v in _SKIP_VALS:
-            continue
-        display = v
-        if k == "site_id":
-            r = resolve_site(v, sites)
-            if r: display = r
-        elif "entity" in k or "civ" in k:
-            r = resolve_entity(v, entities)
-            if r: display = r.title()
-        elif "hfid" in k.lower():
-            r = resolve_hf(v, hf_info)
-            if r: display = r
-        elif k == "artifact_id":
-            a = artifacts.get(v, "")
-            if a: display = a
-        details.append(k.replace("_", " ").title() + ": " + display)
-    return details
-
-
-def sort_events(event_ids, all_events):
-    """Return (year, sec, event_id, event_dict) tuples sorted chronologically."""
-    result = []
-    for eid in event_ids:
-        ev = all_events.get(eid, {})
-        try:
-            yr = int(ev.get("year", 0))
-        except ValueError:
-            yr = 0
-        try:
-            sc = int(ev.get("sec", -1))
-        except ValueError:
-            sc = -1
-        result.append((yr, sc, eid, ev))
-    result.sort()
-    return result
-
-
 def print_top(top, world):
     n = len(top)
     print("\n" + "=" * 80)
@@ -367,7 +260,6 @@ def print_timeline(winner_id, world):
             print("    - " + el["type"] + ": " + (resolve_entity(el["eid"], world.entities) or "?"))
     print("=" * 80)
 
-    # Sort events chronologically
     event_ids = world.hfid_to_events.get(winner_id, [])
     events_sorted = sort_events(event_ids, world.all_events)
 
@@ -379,7 +271,6 @@ def print_timeline(winner_id, world):
         for d in details:
             print("      " + d)
 
-    # Relevant event collections
     top_event_set = set(world.hfid_to_events.get(winner_id, []))
     rel_colls = [c for c in world.collections if top_event_set.intersection(set(c.get("_events", [])))]
     if rel_colls:
@@ -434,7 +325,6 @@ def build_results(top, winner_id, world, scores):
                            for s in sorted(hf["skills"], key=lambda x: x["ip"], reverse=True)[:3]],
         })
 
-    # Timeline for selected figure
     timeline = None
     if winner_id and winner_id in world.hf_info:
         w = world.hf_info[winner_id]
@@ -504,12 +394,12 @@ def main():
         sys.exit(1)
 
     content = clean_xml(args.file)
-    root = parse_all(content)
+    root = parse_xml(content)
     del content
 
     artifacts, artifact_by_holder = extract_artifacts(root)
     event_counts, kill_counts, killed_by, event_type_counts, all_events, hfid_to_events = \
-        extract_events(root, HF_FIELDS)
+        extract_events(root)
     world = WorldData(
         sites=extract_sites(root),
         entities=extract_entities(root),
@@ -529,7 +419,10 @@ def main():
     scores = score_figures(world)
     top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:args.top]
 
-    # Determine which figure to show timeline for
+    if not top:
+        print("ERROR: No historical figures found in this legends file.", file=sys.stderr)
+        sys.exit(1)
+
     winner_id = args.figure if args.figure else top[0][0]
     if winner_id not in world.hf_info:
         print(f"\nERROR: Figure ID '{winner_id}' not found!", file=sys.stderr)
