@@ -11,7 +11,10 @@ Usage:
 import argparse
 import dataclasses
 import json
-import xml.etree.ElementTree as ET
+try:
+    import defusedxml.ElementTree as ET
+except ImportError:
+    import xml.etree.ElementTree as ET  # type: ignore[no-redef]
 from collections import defaultdict, Counter
 import re
 import sys
@@ -43,6 +46,8 @@ HF_FIELDS = {
     'teacher_hfid', 'trainer_hfid', 'seeker_hfid',
 }
 
+_CONTROL_CHAR_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
+
 DF_MONTHS = [
     "Granite", "Slate", "Felsite", "Hematite", "Malachite", "Galena",
     "Limestone", "Sandstone", "Timber", "Moonstone", "Opal", "Obsidian"
@@ -54,7 +59,7 @@ def clean_xml(filepath):
     print("Cleaning XML of invalid characters...", file=sys.stderr)
     with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         content = f.read()
-    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', content)
+    return _CONTROL_CHAR_RE.sub('', content)
 
 
 def parse_all(xml_string):
@@ -260,6 +265,31 @@ def format_time(year, sec):
     return ts
 
 
+def format_event_details(ev, sites, entities, hf_info, artifacts):
+    """Return human-readable 'Key: Value' strings for displayable event fields."""
+    SKIP_KEYS = frozenset(("id", "type", "year", "sec"))
+    SKIP_VALS = frozenset(("-1", "", "-1,-1"))
+    details = []
+    for k, v in sorted(ev.items()):
+        if k in SKIP_KEYS or v in SKIP_VALS:
+            continue
+        display = v
+        if k == "site_id":
+            r = resolve_site(v, sites)
+            if r: display = r
+        elif "entity" in k or "civ" in k:
+            r = resolve_entity(v, entities)
+            if r: display = r.title()
+        elif "hfid" in k.lower():
+            r = resolve_hf(v, hf_info)
+            if r: display = r
+        elif k == "artifact_id":
+            a = artifacts.get(v, "")
+            if a: display = a
+        details.append(k.replace("_", " ").title() + ": " + display)
+    return details
+
+
 def print_top(top, world):
     n = len(top)
     print("\n" + "=" * 80)
@@ -338,28 +368,7 @@ def print_timeline(winner_id, world):
     for yr, sc, eid, ev in events_sorted:
         etype = ev.get("type", "?")
         ts = format_time(yr, sc)
-        details = []
-        for k, v in sorted(ev.items()):
-            if k in ("id", "type", "year", "sec") or v == "-1" or v == "" or v == "-1,-1":
-                continue
-            display = v
-            if k == "site_id":
-                r = resolve_site(v, world.sites)
-                if r:
-                    display = r
-            elif "entity" in k or "civ" in k:
-                r = resolve_entity(v, world.entities)
-                if r:
-                    display = r.title()
-            elif "hfid" in k.lower():
-                r = resolve_hf(v, world.hf_info)
-                if r:
-                    display = r
-            elif k == "artifact_id":
-                a = world.artifacts.get(v, "")
-                if a:
-                    display = a
-            details.append(k.replace("_", " ").title() + ": " + display)
+        details = format_event_details(ev, world.sites, world.entities, world.hf_info, world.artifacts)
         print("\n  [" + ts + "] " + etype.upper())
         for d in details:
             print("      " + d)
