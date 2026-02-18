@@ -1,191 +1,177 @@
 # analyze_figures.py
 
 Command-line utility to analyze a **Dwarf Fortress** *legends.xml* file
-and identify the most “interesting” historical figures based on events,
+and identify the most "interesting" historical figures based on events,
 kills, relationships, special statuses, skills, affiliations, and
-artifact ownership. The script prints a ranked Top 20 list and a full
-timeline for either the top-ranked figure or a specified figure ID.
-
-## Features
-
-- Parses a *legends.xml* file and extracts:
-
-  - Sites
-  - Entities
-  - Artifacts (including artifact holders)
-  - Historical figures (metadata, relationships, affiliations, skills,
-    spheres, site links)
-  - Historical events (mentions of historical figures, kills, event
-    types)
-  - Historical event collections (e.g., wars/battles/attacks)
-
-- Computes an “interestingness” score per historical figure
-
-- Prints:
-
-  - Top 20 ranked figures with key summary details
-  - Full chronological timeline for a selected figure (top \#1 by
-    default, or a provided ID)
-  - Relevant event collections that include events from the selected
-    figure’s timeline
+artifact ownership.
 
 ## Requirements
 
 - Python 3.x
-- Standard library only (no external dependencies)
+- [`defusedxml`](https://pypi.org/project/defusedxml/) (optional but recommended — falls back to `xml.etree.ElementTree` if not installed)
 
-## Installation
-
-No installation required. Save the script as *analyze_figures.py* and
-run it with Python.
+```
+pip install defusedxml
+```
 
 ## Usage
 
-### Top 20 figures and timeline for the \#1 figure
+```
+python3 analyze_figures.py <file> [options]
+```
 
-*python3 analyze_figures.py \<legends_xml_file\>*
+| Argument | Description |
+|---|---|
+| `file` | Path to the legends XML file |
+| `-f`, `--figure ID` | Historical figure ID to show a timeline for (default: top-ranked figure) |
+| `-n`, `--top N` | Number of top figures to display (default: `20`) |
+| `--format text\|json` | Output format (default: `text`) |
 
-### Timeline for a specific figure by ID
+Progress messages (loading, parsing, extraction counts) are written to
+**stderr**. Analysis output goes to **stdout**, so they can be separated:
 
-*python3 analyze_figures.py \<legends_xml_file\> \<figure_id\>*
+```bash
+# Clean output only
+python3 analyze_figures.py legends.xml 2>/dev/null
+
+# JSON to a file, progress visible in terminal
+python3 analyze_figures.py legends.xml --format json > out.json
+```
+
+### Examples
+
+```bash
+# Top 20 figures + timeline for the #1 figure
+python3 analyze_figures.py legends.xml
+
+# Top 10 figures only
+python3 analyze_figures.py legends.xml -n 10
+
+# Full timeline for figure ID 1234
+python3 analyze_figures.py legends.xml -f 1234
+
+# JSON output, piped through a formatter
+python3 analyze_figures.py legends.xml --format json 2>/dev/null | python3 -m json.tool
+```
 
 ## Output
 
-### Top 20 list
+### Text mode
 
-Prints 20 figures ranked by score. For each figure, output includes:
+**Top-N list** — one entry per figure, including:
 
-- Name and ID
+- Name, ID, and interestingness score
+- Race, caste, birth year, and status (alive or death year)
+- Tags: `DEITY`, `FORCE`, `VAMPIRE`, `NECROMANCER`, `MEGABEAST`
+- Counts: event mentions, kills, relationship links, positions held
+- Spheres, artifacts held, top skills (up to 3 by total IP), top event types (up to 5)
 
-- Race and caste
+**Figure timeline** — for the selected figure:
 
-- Birth year and (if applicable) death year
-
-- Tags (when detected):
-
-  - DEITY
-  - FORCE
-  - VAMPIRE
-  - NECROMANCER
-  - MEGABEAST
-
-- Summary counts:
-
-  - Event mentions
-  - Kills credited to the figure
-  - Relationship links
-  - Positions held (entity links of type *position* / *former_position*)
-
-- Optional detail sections (when present):
-
-  - Spheres
-  - Artifacts held
-  - Top skills (up to 3, by total IP)
-  - Top event types involving the figure (up to 5)
-
-### Timeline (detail output)
-
-For the selected figure (top-ranked by default, or the provided ID),
-prints:
-
-- Header with identity and life status
-
-- If dead and the killer is known: “Killed by …”
-
-- Spheres (if any)
-
-- Relationship list (up to 20)
-
-- Entity affiliations (all recorded *entity_link* entries)
-
-- Full chronological event timeline, with ID resolution for:
-
-  - *site_id* → site name
+- Header: identity, life/death status, killer if known
+- Spheres, relationships (up to 20), entity affiliations
+- Full chronological event list with resolved names:
+  - `site_id` → site name
   - entity/civ fields → entity name
-  - *\*hfid\** fields → historical figure name (+ race)
-  - *artifact_id* → artifact name
+  - `*hfid*` fields → figure name and race
+  - `artifact_id` → artifact name
+- Related event collections (wars, battles, etc.) that include events from this figure's timeline (up to 30)
 
-- Event collections that include any events from the figure’s timeline
-  (up to 30 shown)
+### JSON mode
 
-## Scoring Model
+```json
+{
+  "top_figures": [
+    {
+      "rank": 1,
+      "id": "...",
+      "name": "...",
+      "race": "...",
+      "caste": "...",
+      "birth_year": "...",
+      "death_year": "...",
+      "score": 0,
+      "kills": 0,
+      "events": 0,
+      "relations": 0,
+      "positions": 0,
+      "tags": [],
+      "spheres": [],
+      "artifacts": [],
+      "top_skills": [{"skill": "...", "ip": 0}]
+    }
+  ],
+  "timeline": {
+    "id": "...",
+    "name": "...",
+    "race": "...",
+    "caste": "...",
+    "birth_year": "...",
+    "death_year": "...",
+    "killed_by": null,
+    "spheres": [],
+    "relationships": [{"type": "...", "figure": "..."}],
+    "entity_links": [{"type": "...", "entity": "..."}],
+    "events": [
+      {
+        "id": "...",
+        "type": "...",
+        "year": 0,
+        "timestamp": "Year 100, 1 Granite",
+        "details": {}
+      }
+    ],
+    "collections": [{"type": "...", "name": "...", "start_year": "...", "end_year": "..."}]
+  }
+}
+```
 
-Each historical figure receives a score based on the following
-components:
+`events[].details` keeps raw IDs (no name resolution) for machine consumption.
+`timeline` is `null` if no figure was selected.
 
-- **Event mentions:** *min(event_mentions \* 2, 500)*
+## Scoring model
 
-- **Kills credited:** *kills \* 15*
+Each historical figure receives a score used only for ranking:
 
-- **Special statuses:**
+| Component | Points |
+|---|---|
+| Event mentions | `min(mentions × 2, 500)` |
+| Kills credited | `kills × 15` |
+| Vampire | +80 |
+| Necromancer | +100 |
+| Deity | +120 |
+| Force | +90 |
+| Megabeast (by race) | +70 |
+| Relationship links | `min(links × 3, 100)` |
+| Positions held (position / former_position / position_claim) | +20 each |
+| Artifacts held | +30 each |
+| Spheres | +10 each |
+| Skills | `min((count × 2) + (max_ip // 5000), 80)` |
+| Site links | `min(links × 5, 50)` |
+| Entity links (all types) | `min(links × 3, 60)` |
+| Death year recorded | +5 |
+| Appears in killed-by map | +5 |
 
-  - Vampire: *+80*
-  - Necromancer: *+100*
-  - Deity: *+120*
-  - Force: *+90*
-  - Megabeast (by race): *+70*
+## Time formatting
 
-- **Relationships (hf links):** *min(relationship_links \* 3, 100)*
-
-- **Positions held (entity links):** *+20* per link type in:
-
-  - *position*
-  - *former_position*
-  - *position_claim*
-
-- **Artifacts held:** *+30* per artifact where *holder_hfid* matches the
-  figure
-
-- **Spheres:** *+10* per sphere
-
-- **Skills:** *min((num_skills \* 2) + (max_total_ip // 5000), 80)*
-
-- **Site links:** *min(site_links \* 5, 50)*
-
-- **Entity links (all types):** *min(entity_links \* 3, 60)*
-
-- **Death recorded (death_year != -1):** *+5*
-
-- **Killed by someone (victim appears in killed_by map):** *+5*
-
-The score is used only for ranking output.
-
-## Time Formatting
-
-Events provide *year* and *seconds72*. When *seconds72* is available
-(\>= 0), the script converts it to a calendar date using:
-
-- 12 months, 28 days per month
-- Dwarf Fortress month names (*Granite* through *Obsidian*)
-
-If conversion fails or *seconds72* is unavailable, the script prints
-*Year \<year\>*.
+Events carry `year` and `seconds72`. When `seconds72 >= 0` the script
+converts it to a DF calendar date (12 months × 28 days, named *Granite*
+through *Obsidian*). If conversion fails it falls back to `Year <year>`.
 
 ## Limitations
 
-- Loads the full XML into memory (reads, cleans, then parses). Large
-  legends files may require significant RAM.
-- Event mention detection is based on a fixed set of historical-figure
-  ID fields (*HF_FIELDS*). If DF introduces fields not included in this
-  set, they will not be counted as mentions.
-- Kill attribution is based on *slayer_hfid* and *hf died* events where
-  the victim ID is found in the event’s *hfid* field.
-- Event collections are not expanded through nested sub-collections;
-  only direct *event* entries in each collection are used.
+- Loads the full XML into memory (clean → parse). Very large legends
+  files may use significant RAM.
+- HF-field detection relies on the fixed `HF_FIELDS` set. Fields added
+  in newer DF versions may not be counted as figure mentions.
+- Kill attribution uses `slayer_hfid` on `hf died` events only.
+- Event collections are not expanded through nested `eventcol`
+  references; only direct `event` children are used.
 
 ## Troubleshooting
 
-- **File not found**
+**File not found** — verify the path passed as the first argument.
 
-  - Verify the path passed as the first argument points to an existing
-    file.
-
-- **Parse errors**
-
-  - The script removes control characters before parsing, but malformed
-    or truncated XML files may still fail. Ensure the legends file is
-    complete and valid.
-
-## License
-
-No license is included. Add a license file if you plan to redistribute.
+**XML parse errors** — the script strips control characters before
+parsing, but truncated or otherwise malformed files may still fail.
+Ensure the legends export completed successfully.
